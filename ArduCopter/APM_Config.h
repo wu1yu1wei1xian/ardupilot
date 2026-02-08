@@ -44,3 +44,4 @@
 //#define USERHOOK_SUPERSLOWLOOP userhook_SuperSlowLoop();  // for code to be run at 1hz
 //#define USERHOOK_AUXSWITCH 1                        // for code to handle user aux switches
 //#define USER_PARAMS_ENABLED 1                       // to enable user parameters
+#define ARMING_DELAY_SEC 0                            //解锁后电机启动延时
