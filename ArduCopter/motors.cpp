@@ -93,34 +93,159 @@ void Copter::arm_motors_check()
     }
 }
 
-// auto_disarm_check - disarms the copter if it has been sitting on the ground in manual mode with throttle low for at least 15 seconds
+// // auto_disarm_check - disarms the copter if it has been sitting on the ground in manual mode with throttle low for at least 15 seconds
+// void Copter::auto_disarm_check()
+// {
+//     uint32_t tnow_ms = millis();
+//     uint32_t disarm_delay_ms = 1000*constrain_int16(g.disarm_delay, 0, 127);
+
+//     // exit immediately if we are already disarmed, or if auto
+//     // disarming is disabled
+//     if (!motors->armed() || disarm_delay_ms == 0 || flightmode->mode_number() == Mode::Number::THROW) {
+//         auto_disarm_begin = tnow_ms;
+//         return;
+//     }
+
+//     // if the rotor is still spinning, don't initiate auto disarm
+//     if (motors->get_spool_state() > AP_Motors::SpoolState::GROUND_IDLE) {
+//         auto_disarm_begin = tnow_ms;
+//         return;
+//     }
+
+//     // always allow auto disarm if using interlock switch or motors are Emergency Stopped
+//     if ((ap.using_interlock && !motors->get_interlock()) || SRV_Channels::get_emergency_stop()) {
+// #if FRAME_CONFIG != HELI_FRAME
+//         // use a shorter delay if using throttle interlock switch or Emergency Stop, because it is less
+//         // obvious the copter is armed as the motors will not be spinning
+//         disarm_delay_ms /= 2;
+// #endif
+//     } else {
+//         bool sprung_throttle_stick = (g.throttle_behavior & THR_BEHAVE_FEEDBACK_FROM_MID_STICK) != 0;
+//         bool thr_low;
+//         if (flightmode->has_manual_throttle() || !sprung_throttle_stick) {
+//             thr_low = ap.throttle_zero;
+//         } else {
+//             float deadband_top = get_throttle_mid() + g.throttle_deadzone;
+//             thr_low = channel_throttle->get_control_in() <= deadband_top;
+//         }
+
+//         if (!thr_low || !ap.land_complete) {
+//             // reset timer
+//             auto_disarm_begin = tnow_ms;
+//         }
+//     }
+
+//     // disarm once timer expires
+//     if ((tnow_ms-auto_disarm_begin) >= disarm_delay_ms) {
+//         arming.disarm(AP_Arming::Method::DISARMDELAY);
+//         auto_disarm_begin = tnow_ms;
+//     }
+// }
 void Copter::auto_disarm_check()
 {
     uint32_t tnow_ms = millis();
-    uint32_t disarm_delay_ms = 1000*constrain_int16(g.disarm_delay, 0, 127);
+    uint32_t disarm_delay_ms = 1000 * constrain_int16(g.disarm_delay, 0, 127);
 
-    // exit immediately if we are already disarmed, or if auto
-    // disarming is disabled
-    if (!motors->armed() || disarm_delay_ms == 0 || flightmode->mode_number() == Mode::Number::THROW) {
+    /*
+     * =========================
+     * 本函数为 10Hz 周期调用
+     * =========================
+     */
+
+    // ===== 新增：上一帧触地状态（用于检测“空中 → 触地”边沿）=====
+    static bool land_complete_prev = false;
+
+    // ===== 新增：快速锁定是否已经启动（防止重复计时）=====
+    static bool fast_lock_started = false;
+
+    /*
+     * =========================
+     * 一、快速退出条件
+     * =========================
+     */
+
+    // 已经上锁 / 禁用自动上锁 / THROW 模式 → 直接退出
+    if (!motors->armed() ||
+        disarm_delay_ms == 0 ||
+        flightmode->mode_number() == Mode::Number::THROW)
+    {
         auto_disarm_begin = tnow_ms;
+        land_complete_prev = ap.land_complete;
+        fast_lock_started = false;
         return;
     }
 
-    // if the rotor is still spinning, don't initiate auto disarm
-    if (motors->get_spool_state() > AP_Motors::SpoolState::GROUND_IDLE) {
+    // 电机仍在高转速（未完全落地）→ 不允许任何自动上锁
+    if (motors->get_spool_state() > AP_Motors::SpoolState::GROUND_IDLE)
+    {
         auto_disarm_begin = tnow_ms;
+        land_complete_prev = ap.land_complete;
+        fast_lock_started = false;
         return;
     }
 
-    // always allow auto disarm if using interlock switch or motors are Emergency Stopped
-    if ((ap.using_interlock && !motors->get_interlock()) || SRV_Channels::get_emergency_stop()) {
+    /*
+     * =========================
+     * 二、定高 / 定点：触地 1 秒快速上锁
+     * =========================
+     */
+
+    // 仅在 ALT_HOLD / LOITER 模式启用
+    const bool is_alt_loiter_mode =
+        (flightmode->mode_number() == Mode::Number::ALT_HOLD) ||
+        (flightmode->mode_number() == Mode::Number::LOITER);
+
+    // 1️⃣ 检测“空中 → 触地”的瞬间（land_complete 上升沿）
+    if (is_alt_loiter_mode &&
+        ap.land_complete &&
+        !land_complete_prev &&
+        motors->get_spool_state() <= AP_Motors::SpoolState::GROUND_IDLE)
+    {
+        auto_disarm_begin = tnow_ms; // 记录触地时间
+        fast_lock_started = true;    // 进入快速锁定阶段
+    }
+
+    // 2️⃣ 已触地，且已进入快速锁定阶段，持续 ≥1 秒 → 立即 DISARM
+    if (is_alt_loiter_mode &&
+        ap.land_complete &&
+        fast_lock_started &&
+        (tnow_ms - auto_disarm_begin) >= 1000)
+    {
+        // 使用 DISARMDELAY 方法，语义为自动上锁
+        arming.disarm(AP_Arming::Method::DISARMDELAY);
+
+        auto_disarm_begin = tnow_ms;
+        fast_lock_started = false;
+        land_complete_prev = ap.land_complete;
+        return; // 跳过原有 DISARM_DELAY 逻辑
+    }
+
+    // 3️⃣ 模式切换（非 ALT/LOITER）→ 立即取消快速锁定
+    if (!is_alt_loiter_mode) {
+        fast_lock_started = false;
+    }
+
+    /*
+     * =========================
+     * 三、原有自动上锁逻辑（保持不变）
+     * =========================
+     */
+
+    // 使用互锁开关或紧急停机 → 缩短自动上锁时间
+    if ((ap.using_interlock && !motors->get_interlock()) ||
+        SRV_Channels::get_emergency_stop())
+    {
 #if FRAME_CONFIG != HELI_FRAME
-        // use a shorter delay if using throttle interlock switch or Emergency Stop, because it is less
-        // obvious the copter is armed as the motors will not be spinning
+        // 非直升机，延时减半
         disarm_delay_ms /= 2;
 #endif
-    } else {
-        bool sprung_throttle_stick = (g.throttle_behavior & THR_BEHAVE_FEEDBACK_FROM_MID_STICK) != 0;
+    }
+    else
+    {
+        // 判断油门是否在低位
+        bool sprung_throttle_stick =
+            (g.throttle_behavior & THR_BEHAVE_FEEDBACK_FROM_MID_STICK) != 0;
+
         bool thr_low;
         if (flightmode->has_manual_throttle() || !sprung_throttle_stick) {
             thr_low = ap.throttle_zero;
@@ -129,17 +254,26 @@ void Copter::auto_disarm_check()
             thr_low = channel_throttle->get_control_in() <= deadband_top;
         }
 
+        // 油门不在低位 或 未触地 → 重置自动上锁计时
         if (!thr_low || !ap.land_complete) {
-            // reset timer
             auto_disarm_begin = tnow_ms;
+            fast_lock_started = false;
         }
     }
 
-    // disarm once timer expires
-    if ((tnow_ms-auto_disarm_begin) >= disarm_delay_ms) {
+    // 原有逻辑：达到 DISARM_DELAY 后自动上锁
+    if ((tnow_ms - auto_disarm_begin) >= disarm_delay_ms) {
         arming.disarm(AP_Arming::Method::DISARMDELAY);
         auto_disarm_begin = tnow_ms;
     }
+
+    /*
+     * =========================
+     * 四、同步上一帧状态
+     * =========================
+     */
+
+    land_complete_prev = ap.land_complete;
 }
 
 // motors_output - send output to motors library which will adjust and send to ESCs and servos
