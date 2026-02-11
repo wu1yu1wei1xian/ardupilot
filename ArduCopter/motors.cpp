@@ -94,53 +94,7 @@ void Copter::arm_motors_check()
 }
 
 // // auto_disarm_check - disarms the copter if it has been sitting on the ground in manual mode with throttle low for at least 15 seconds
-// void Copter::auto_disarm_check()
-// {
-//     uint32_t tnow_ms = millis();
-//     uint32_t disarm_delay_ms = 1000*constrain_int16(g.disarm_delay, 0, 127);
 
-//     // exit immediately if we are already disarmed, or if auto
-//     // disarming is disabled
-//     if (!motors->armed() || disarm_delay_ms == 0 || flightmode->mode_number() == Mode::Number::THROW) {
-//         auto_disarm_begin = tnow_ms;
-//         return;
-//     }
-
-//     // if the rotor is still spinning, don't initiate auto disarm
-//     if (motors->get_spool_state() > AP_Motors::SpoolState::GROUND_IDLE) {
-//         auto_disarm_begin = tnow_ms;
-//         return;
-//     }
-
-//     // always allow auto disarm if using interlock switch or motors are Emergency Stopped
-//     if ((ap.using_interlock && !motors->get_interlock()) || SRV_Channels::get_emergency_stop()) {
-// #if FRAME_CONFIG != HELI_FRAME
-//         // use a shorter delay if using throttle interlock switch or Emergency Stop, because it is less
-//         // obvious the copter is armed as the motors will not be spinning
-//         disarm_delay_ms /= 2;
-// #endif
-//     } else {
-//         bool sprung_throttle_stick = (g.throttle_behavior & THR_BEHAVE_FEEDBACK_FROM_MID_STICK) != 0;
-//         bool thr_low;
-//         if (flightmode->has_manual_throttle() || !sprung_throttle_stick) {
-//             thr_low = ap.throttle_zero;
-//         } else {
-//             float deadband_top = get_throttle_mid() + g.throttle_deadzone;
-//             thr_low = channel_throttle->get_control_in() <= deadband_top;
-//         }
-
-//         if (!thr_low || !ap.land_complete) {
-//             // reset timer
-//             auto_disarm_begin = tnow_ms;
-//         }
-//     }
-
-//     // disarm once timer expires
-//     if ((tnow_ms-auto_disarm_begin) >= disarm_delay_ms) {
-//         arming.disarm(AP_Arming::Method::DISARMDELAY);
-//         auto_disarm_begin = tnow_ms;
-//     }
-// }
 void Copter::auto_disarm_check()
 {
     uint32_t tnow_ms = millis();
