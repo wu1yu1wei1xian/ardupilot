@@ -795,8 +795,8 @@ bool AP_Arming::rc_arm_checks(AP_Arming::Method method)
                 const char *name;
                 const RC_Channel *channel;
             } channels_to_check[] {
-                { "Roll", &rc().get_roll_channel(), },
-                { "Pitch", &rc().get_pitch_channel(), },
+                //{ "Roll", &rc().get_roll_channel(), },
+                //{ "Pitch", &rc().get_pitch_channel(), },
                 { "Yaw", &rc().get_yaw_channel(), },
             };
             for (const auto &channel_to_check : channels_to_check) {
