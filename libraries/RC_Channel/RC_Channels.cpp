@@ -374,26 +374,28 @@ void RC_Channels::rudder_arm_disarm_check()
         return;
     }
 
-    const RC_Channel *channel = get_arming_channel();
-    if (channel == nullptr) {
-        return;
-    }
+    auto &roll  = get_roll_channel();
+    auto &pitch = get_pitch_channel();
+    auto &yaw   = get_yaw_channel();
 
-    const auto control_in = channel->get_control_in();
-    const auto abs_control_in = abs(control_in);
+    const int16_t threshold = 4000;
 
-    if (abs_control_in == 0) {
-        have_seen_neutral_rudder = true;
-    }
+    const int16_t roll_in  = roll.get_control_in();
+    const int16_t pitch_in = pitch.get_control_in();
+    const int16_t yaw_in   = yaw.get_control_in();
 
-    if (abs_control_in <= 4000) {
+    const bool arm_gesture =(yaw_in > threshold) &&(pitch_in > threshold) &&(roll_in < -threshold);
+
+    const bool disarm_gesture =(yaw_in < -threshold) &&(pitch_in > threshold) &&(roll_in > threshold);
+
+    if (!arm_gesture && !disarm_gesture) {
         // not trying to (or no longer trying to) arm or disarm
         rudder_arm_timer = 0;
         return;
     }
 
     // enforce correct stick gesture for arming (but not disarming):
-    if (arming_check_throttle() && control_in > 4000) {
+    if (arming_check_throttle() && arm_gesture) {
         // only permit arming if the vehicle isn't being commanded to
         // move via RC input
         const auto &c = rc().get_throttle_channel();
@@ -410,17 +412,17 @@ void RC_Channels::rudder_arm_disarm_check()
         return;
     }
 
-    if (now - rudder_arm_timer < 3000) {
+    if (now - rudder_arm_timer < 1000) {
         // not time yet....
         return;
     }
 
     // time to try to arm or disarm:
     rudder_arm_timer = 0;
-    if (control_in > 4000) {
+    if (arm_gesture) {
         AP::arming().arm(AP_Arming::Method::RUDDER);
         have_seen_neutral_rudder = false;
-    } else {
+    } else if (disarm_gesture) {
         if (AP::arming().get_rudder_arming_type() == AP_Arming::RudderArming::ARMDISARM) {
             AP::arming().disarm(AP_Arming::Method::RUDDER);
         }
