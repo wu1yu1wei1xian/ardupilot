@@ -6,29 +6,26 @@ AP_FLAKE8_CLEAN
 
 import copy
 import math
+import operator
 import os
 import signal
 import time
 
-from pymavlink import quaternion
 from pymavlink import mavutil
-
+from pymavlink import quaternion
 from pymavlink.rotmat import Vector3
 
 import vehicle_test_suite
 
+from pysim import util
+from pysim import vehicleinfo
+from vehicle_test_suite import MAV_POS_TARGET_TYPE_MASK
 from vehicle_test_suite import AutoTestTimeoutException
 from vehicle_test_suite import NotAchievedException
 from vehicle_test_suite import OldpymavlinkException
 from vehicle_test_suite import PreconditionFailedException
 from vehicle_test_suite import Test
 from vehicle_test_suite import WaitModeTimeout
-from vehicle_test_suite import MAV_POS_TARGET_TYPE_MASK
-
-from pysim import vehicleinfo
-from pysim import util
-
-import operator
 
 # get location of scripts
 testdir = os.path.dirname(os.path.realpath(__file__))
@@ -1008,18 +1005,15 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
     def fly_home_land_and_disarm(self, timeout=120):
         filename = "flaps.txt"
         self.progress("Using %s to fly home" % filename)
-        self.load_generic_mission(filename)
+        n = self.load_generic_mission(filename)
         self.change_mode("AUTO")
         # don't set current waypoint to 8 unless we're distant from it
         # or we arrive instantly and never see it as our current
         # waypoint:
         self.wait_distance_to_waypoint(8, 100, 10000000)
         self.set_current_waypoint(8)
-        # TODO: reflect on file to find this magic waypoint number?
-        #        self.wait_waypoint(7, num_wp-1, timeout=500) # we
-        #        tend to miss the final waypoint by a fair bit, and
-        #        this is probably too noisy anyway?
-        self.wait_disarmed(timeout=timeout)
+        self.wait_current_waypoint(n-1, timeout=timeout)
+        self.wait_disarmed(60)
 
     def TestFlaps(self):
         """Test flaps functionality."""
@@ -3013,7 +3007,13 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.wait_altitude(alt*0.9, alt*1.1, minimum_duration=10, relative=True)
         self.fly_home_land_and_disarm()
 
-    def fly_external_AHRS(self, sim, eahrs_type, mission):
+    def fly_generic_mission(self, filename, mission_timeout=60.0, strict=True):
+        """Fly a mission from the Generic_Missions directory."""
+        self.progress("Flying generic mission %s" % filename)
+        num_wp = self.load_generic_mission(filename, strict=strict) - 1
+        self.fly_mission_waypoints(num_wp, mission_timeout=mission_timeout)
+
+    def fly_external_AHRS(self, sim, eahrs_type):
         """Fly with external AHRS"""
         self.customise_SITL_commandline(["--serial4=sim:%s" % sim])
 
@@ -3036,7 +3036,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
 
         self.wait_ready_to_arm()
         self.arm_vehicle()
-        self.fly_mission(mission)
+        self.fly_generic_mission("externalahrs.txt")
 
     def wait_and_maintain_wind_estimate(
             self,
@@ -3122,6 +3122,43 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             )
         self.fly_home_land_and_disarm()
 
+    def WindMessageSpeed(self):
+        '''Test that WIND.speed is horizontal (ground-plane) speed only'''
+        # SIM_WIND_DIR_Z is an elevation angle (degrees from horizontal).
+        # With dir_z=45 the wind vector is split equally between horizontal
+        # and vertical, so the 3D magnitude equals SIM_WIND_SPD while the
+        # horizontal magnitude is SIM_WIND_SPD * cos(45) ~= 0.707 * SPD.
+        # Before the fix WIND.speed was wind.length() (3D); after the fix it
+        # is wind.xy().length() (horizontal only).
+        #
+        # AHRS_EKF_TYPE=10 (SIM backend) reads the actual 3D SITL wind
+        # vector directly.
+        wind_spd = 10.0
+        wind_dir_z_deg = 45.0
+        expected_horizontal = wind_spd * math.cos(math.radians(wind_dir_z_deg))
+
+        self.set_parameters({
+            "AHRS_EKF_TYPE": 10,        # SIM backend: returns actual 3D SITL wind
+            "SIM_WIND_SPD": wind_spd,
+            "SIM_WIND_DIR": 45,
+            "SIM_WIND_DIR_Z": wind_dir_z_deg,
+        })
+
+        # The SIM AHRS backend returns actual 3D SITL wind, but the
+        # fallback logic prevents it being used until in flight.
+        self.takeoff(20, mode='TAKEOFF')
+        self.delay_sim_time(5)
+
+        # Without the fix, speed == wind_spd (3D magnitude ~10 m/s).
+        # With the fix, speed == horizontal component (~7.07 m/s).
+        # A tolerance of 1 m/s distinguishes the two clearly.
+        self.assert_received_message_field_values("WIND", {
+            "speed": expected_horizontal,
+        }, epsilon=1)
+
+        self.disarm_vehicle(force=True)
+        self.reboot_sitl()
+
     def Replay(self):
         '''test replay correctness'''
         self.progress("Building Replay")
@@ -3198,19 +3235,19 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
 
     def VectorNavEAHRS(self):
         '''Test VectorNav EAHRS support'''
-        self.fly_external_AHRS("VectorNav", 1, "ap1.txt")
+        self.fly_external_AHRS("VectorNav", 1)
 
     def MicroStrainEAHRS5(self):
         '''Test MicroStrain EAHRS series 5 support'''
-        self.fly_external_AHRS("MicroStrain5", 2, "ap1.txt")
+        self.fly_external_AHRS("MicroStrain5", 2)
 
     def MicroStrainEAHRS7(self):
         '''Test MicroStrain EAHRS series 7 support'''
-        self.fly_external_AHRS("MicroStrain7", 7, "ap1.txt")
+        self.fly_external_AHRS("MicroStrain7", 7)
 
     def InertialLabsEAHRS(self):
         '''Test InertialLabs EAHRS support'''
-        self.fly_external_AHRS("ILabs", 5, "ap1.txt")
+        self.fly_external_AHRS("ILabs", 5)
 
     def GpsSensorPreArmEAHRS(self):
         '''Test pre-arm checks related to EAHRS_SENSORS using the MicroStrain7 driver'''
@@ -3779,6 +3816,9 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
         self.wait_altitude(30, 40, timeout=200, relative=True)
         # min alt fence should now be re-enabled
         self.assert_fence_enabled()
+
+        # re-center pitch stick
+        self.set_rc(2, 1500)
 
         self.change_mode("AUTO")
         self.clear_mission(mavutil.mavlink.MAV_MISSION_TYPE_ALL)
@@ -8002,6 +8042,7 @@ class AutoTestPlane(vehicle_test_suite.TestSuite):
             self.MANUAL_CONTROL,
             self.RunMissionScript,
             self.WindEstimates,
+            self.WindMessageSpeed,
             self.AltResetBadGPS,
             self.AirspeedCal,
             self.MissionJumpTags,

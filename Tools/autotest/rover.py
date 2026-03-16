@@ -13,17 +13,16 @@ import pathlib
 import sys
 import time
 
+from pymavlink import mavextra
+from pymavlink import mavutil
+
 import vehicle_test_suite
 
 from pysim import util
 from pysim import vehicleinfo
-
 from vehicle_test_suite import AutoTestTimeoutException
 from vehicle_test_suite import NotAchievedException
 from vehicle_test_suite import PreconditionFailedException
-
-from pymavlink import mavextra
-from pymavlink import mavutil
 
 # get location of scripts
 testdir = os.path.dirname(os.path.realpath(__file__))
@@ -2622,7 +2621,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
 
     def check_rally_items_same(self, want, got, epsilon=None):
         check_atts = ['mission_type', 'command', 'x', 'y', 'z', 'seq', 'param1']
-        return self.check_mission_items_same(check_atts, want, got, epsilon=epsilon)
+        return self.check_mission_items_same('rally', check_atts, want, got, epsilon=epsilon)
 
     def click_three_in(self, mavproxy, target_system=1, target_component=1):
         mavproxy.send('rally clear\n')
@@ -7017,8 +7016,6 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
 
         self.correct_wp_seq_numbers(fence)
         self.check_fence_upload_download(fence)
-
-        self.delay_sim_time(1000)
 
     def ManyMAVLinkConnections(self):
         '''test testing >8 MAVLink connections'''
