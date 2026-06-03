@@ -84,7 +84,7 @@ const AP_Scheduler::Task Rover::scheduler_tasks[] = {
     SCHED_TASK_CLASS(AP_Beacon,           &rover.g2.beacon,        update,         50,  200,  24),
 #endif
 #if HAL_PROXIMITY_ENABLED
-    SCHED_TASK_CLASS(AP_Proximity,        &rover.g2.proximity,     update,         50,  200,  27),
+    SCHED_TASK_CLASS(AP_Proximity,        &rover.g2.proximity,     update,         200,  200,  27),
 #endif
     SCHED_TASK_CLASS(AP_WindVane,         &rover.g2.windvane,      update,         20,  100,  30),
     SCHED_TASK(update_wheel_encoder,   50,    200,  36),
@@ -152,7 +152,6 @@ constexpr int8_t Rover::_failsafe_priorities[7];
 Rover::Rover(void) :
     AP_Vehicle(),
     param_loader(var_info),
-    modes(&g.mode1),
     control_mode(&mode_initializing)
 {
 }
@@ -317,7 +316,7 @@ void Rover::ahrs_update()
     Vector3f velocity;
     if (ahrs.get_velocity_NED(velocity)) {
         ground_speed = velocity.xy().length();
-    } else if (gps.status() >= AP_GPS::GPS_OK_FIX_3D) {
+    } else if (gps.status() >= AP_GPS_FixType::FIX_3D) {
         ground_speed = ahrs.groundspeed();
     }
     
@@ -553,7 +552,7 @@ bool Rover::get_wp_crosstrack_error_m(float &xtrack_error) const
     if (!rover.control_mode->is_autopilot_mode()) {
         return false;
     }
-    xtrack_error = control_mode->crosstrack_error();
+    xtrack_error = control_mode->crosstrack_error_m();
     return true;
 }
 

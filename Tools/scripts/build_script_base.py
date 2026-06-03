@@ -1,10 +1,10 @@
-from __future__ import annotations
-
 '''
 Base class for ArduPilot build scripts providing common utilities
 
 AP_FLAKE8_CLEAN
 '''
+
+from __future__ import annotations
 
 import os
 import pathlib
@@ -13,6 +13,9 @@ import string
 import subprocess
 import sys
 import time
+
+from abc import ABC
+from abc import abstractmethod
 
 import board_list
 
@@ -31,7 +34,7 @@ VEHICLE_MAP = {
 }
 
 
-class BuildScriptBase:
+class BuildScriptBase(ABC):
     """Base class for build scripts with common utilities for running programs"""
 
     def __init__(self):
@@ -88,10 +91,10 @@ class BuildScriptBase:
                 path = pathlib.Path(self.tmpdir, f"process-failure-{int(time.time())}")
                 path.write_text(process_failure_content)
                 self.progress("Wrote process failure file (%s)" % path)
-            except Exception:
+            except Exception:  # noqa: BLE001 — best-effort debug-file write
                 self.progress("Writing process failure file failed")
             raise subprocess.CalledProcessError(
-                returncode, cmd_list)
+                status, cmd_list)
         return output
 
     def find_current_git_branch_or_sha1(self):
@@ -231,6 +234,10 @@ class BuildScriptBase:
                     break
 
         return sorted(modified_board_names, key=lambda x: x.lower())
+
+    @abstractmethod
+    def progress_prefix(self) -> str:
+        '''return a short prefix string identifying this script in log output'''
 
     def progress(self, string):
         '''pretty-print progress'''
