@@ -150,7 +150,8 @@ BUILD_OPTIONS = [
     Feature('ESC', 'PICCOLOCAN', 'AP_PICCOLOCAN_ENABLED', 'Enable PiccoloCAN', 0, 'DroneCAN'),
     Feature('ESC', 'TORQEEDO', 'HAL_TORQEEDO_ENABLED', 'Enable Torqeedo motors', 0, None),
 
-    Feature('ESC', 'ESC_EXTENDED_TELM', 'AP_EXTENDED_ESC_TELEM_ENABLED', 'Enable Extended ESC telemetry', 0, 'DroneCAN'),
+    Feature('ESC', 'ESC_TELEM', 'HAL_WITH_ESC_TELEM', 'Enable ESC telemetry', 0, None),
+    Feature('ESC', 'ESC_EXTENDED_TELM', 'AP_EXTENDED_ESC_TELEM_ENABLED', 'Enable Extended ESC telemetry', 0, 'DroneCAN,ESC_TELEM'),  # noqa: E501
 
     Feature('AP_Periph', 'LONG_TEXT', 'HAL_PERIPH_SUPPORT_LONG_CAN_PRINTF', 'Enable extended length text strings', 0, None),
     Feature('AP_Periph', 'PERIPH_DEVICE_TEMPERATURE', 'AP_PERIPH_DEVICE_TEMPERATURE_ENABLED', 'Emit DroneCAN Temperature Messages for AP_Temperature sensors', 0, 'TEMP'), # noqa
@@ -457,6 +458,7 @@ BUILD_OPTIONS = [
 
     Feature('Developer', 'KILL_IMU', 'AP_INERTIALSENSOR_KILL_IMU_ENABLED', 'Allow IMUs to be disabled at runtime', 0, None),
     Feature('Developer', 'CRASHCATCHER', 'AP_CRASHDUMP_ENABLED', 'Enable CrashCatcher', 0, None),
+    Feature('Developer', 'FAILURE_INJECTION', 'AP_MAVLINK_FAILURE_CREATION_ENABLED', 'Enable autopilot failure injection via MAVLink ', 0, None),  # noqa:E501
 
     Feature('GPS Drivers', 'UBLOX', 'AP_GPS_UBLOX_ENABLED', 'Enable U-blox GPS', 1, None),
     Feature('GPS Drivers', 'SBP2', 'AP_GPS_SBP2_ENABLED', 'Enable SBP2 GPS', 0, 'SBP'),
@@ -493,7 +495,7 @@ BUILD_OPTIONS = [
     Feature('Actuators', 'FETTecOneWire', 'AP_FETTEC_ONEWIRE_ENABLED', 'Enable FETTec OneWire ESCs', 0, None),
     Feature('Actuators', 'KDECAN', 'AP_KDECAN_ENABLED', 'KDE Direct KDECAN ESC', 0, None),
     Feature('Actuators', 'HimarkServo', 'AP_DRONECAN_HIMARK_SERVO_SUPPORT', 'Enable Himark DroneCAN servos', 0, "DroneCAN"),
-    Feature('Actuators', 'HobbywingESC', 'AP_DRONECAN_HOBBYWING_ESC_SUPPORT', 'Enable Hobbywing DroneCAN ESCs', 0, "DroneCAN"),
+    Feature('Actuators', 'HobbywingESC', 'AP_DRONECAN_HOBBYWING_ESC_SUPPORT', 'Enable Hobbywing DroneCAN ESCs', 0, "DroneCAN,ESC_TELEM"),  # noqa: E501
 
     Feature('Precision Landing', 'PrecLand', 'AC_PRECLAND_ENABLED', 'Enable Precision landing support', 0, None),
     Feature('Precision Landing', 'PrecLand - Companion', 'AC_PRECLAND_MAVLINK_ENABLED', 'Enable MAVLink precision landing support', 0, "PrecLand"),  # noqa

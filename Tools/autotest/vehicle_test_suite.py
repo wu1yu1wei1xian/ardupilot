@@ -19,6 +19,7 @@ import math
 import operator
 import os
 import pathlib
+import queue
 import random
 import re
 import shutil
@@ -60,11 +61,6 @@ from pymavlink.rotmat import Vector3
 
 from pysim import util
 from pysim import vehicleinfo
-
-try:
-    import queue as Queue
-except ImportError:
-    import Queue
 
 
 # Enumeration convenience class for mavlink POSITION_TARGET_TYPEMASK
@@ -215,6 +211,10 @@ class Context(object):
         self.installed_modules = []
         self.overridden_message_rates = {}
         self.raising_debug_trap_on_exceptions = False
+        # self.speedup value to restore on context_pop(); set by the
+        # first context_set_speedup() call in this context (None means
+        # speedup was never changed in this context)
+        self.original_speedup = None
         # files snapshotted via context_backup_file() and restored on
         # context_pop(); list of (path, original_bytes) tuples
         self.backup_files = []
@@ -2050,7 +2050,7 @@ class TestSuite(abc.ABC):
 
         self.rc_thread = None
         self.rc_thread_should_quit = False
-        self.rc_queue = Queue.Queue()
+        self.rc_queue = queue.Queue()
 
         self.expect_list = []
 
@@ -3093,6 +3093,16 @@ class TestSuite(abc.ABC):
         self.drain_mav()
         self.wait_heartbeat()
         self.set_streamrate(self.sitl_streamrate())
+        # it takes some time for the autopilot to debounce the RC mode
+        # channel.  If we return straight away then the caller can
+        # change mode using a mavlink command and then the autopilot
+        # processes the debounced RC flight-mode channel, meaning the
+        # mode is changed from underneath the caller.  Wait for some
+        # RC messages to come in - that means we are running the main
+        # loop, at least.  Note that the "set_streamrate" call above
+        # can be handled in a delay callback.
+        for i in range(0, 3):
+            self.assert_receive_message('RC_CHANNELS')
         self.progress("Reboot complete")
 
     def customise_SITL_commandline(self,
@@ -3129,7 +3139,11 @@ class TestSuite(abc.ABC):
         else:
             self.set_streamrate(self.sitl_streamrate())
 
-        self.assert_receive_message('RC_CHANNELS', timeout=15)
+        # mode switch needs to be debounced; waiting for more
+        # RC_CHANNELS doesn't necessarily mean we have done that, but
+        # it won't hurt
+        for i in range(0, 3):
+            self.assert_receive_message('RC_CHANNELS')
 
         # stash our arguments in case we need to preserve them in
         # reboot_sitl with Valgrind active:
@@ -3735,6 +3749,21 @@ class TestSuite(abc.ABC):
         context.raising_debug_trap_on_exceptions = False
         sys.settrace(None)
 
+    def context_set_speedup(self, speedup):
+        '''set the simulation speedup, keeping the SIM_SPEEDUP parameter and
+        the self.speedup attribute (used to scale timeouts) in sync.  The
+        original speedup is restored on context_pop(), so cleanup is
+        exception-safe and handled by the suite rather than each test.
+
+        Calling this more than once in a single context retains the speedup
+        from before the first call - the value restored on context_pop() is
+        always the one in effect when this context was entered.'''
+        context = self.context_get()
+        if context.original_speedup is None:
+            context.original_speedup = self.speedup
+        self.speedup = speedup
+        self.set_parameter("SIM_SPEEDUP", speedup)
+
     def context_set_message_rate_hz(self, id, rate_hz, run_cmd=None):
         if run_cmd is None:
             run_cmd = self.run_cmd
@@ -3827,13 +3856,13 @@ class TestSuite(abc.ABC):
         if ex is not None:
             raise ex
 
-    def download_full_log_list(self, print_logs=True):
+    def download_full_log_list(self, print_logs=True, LOG_ENTRY_sanity_check=True):
         tstart = self.get_sim_time()
         self.mav.mav.log_request_list_send(self.sysid_thismav(),
                                            1, # target component
                                            0,
                                            0xffff)
-        logs = {}
+        logs : dict[int : mavutil.MAVLink.MAVLink_log_entry_message] = {}
         last_id = None
         num_logs = None
         while True:
@@ -3869,7 +3898,8 @@ class TestSuite(abc.ABC):
                 break
 
         # ensure we don't get any extras:
-        self.assert_not_receiving_message('LOG_ENTRY', timeout=2)
+        if LOG_ENTRY_sanity_check:
+            self.assert_not_receiving_message('LOG_ENTRY', timeout=2)
 
         return logs
 
@@ -4716,9 +4746,9 @@ class TestSuite(abc.ABC):
         self.start_subtest("Check disarm rot when log disarmed is zero")
         self.assert_parameter_value("LOG_DISARMED", 0)
         self.set_parameter("LOG_FILE_DSRMROT", 1)
-        old_speedup = self.get_parameter("SIM_SPEEDUP")
         # reduce speedup to reduce chance of race condition here
-        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_push()
+        self.context_set_speedup(1)
         pre_armed_list = self.log_list()
         if self.is_copter() or self.is_heli():
             self.set_parameter("DISARM_DELAY", 0)
@@ -4727,7 +4757,7 @@ class TestSuite(abc.ABC):
         if len(post_armed_list) != len(pre_armed_list):
             raise NotAchievedException("Got unexpected new log")
         self.disarm_vehicle()
-        old_speedup = self.set_parameter("SIM_SPEEDUP", old_speedup)
+        self.context_pop()
         post_disarmed_list = self.log_list()
         if len(post_disarmed_list) != len(post_armed_list):
             raise NotAchievedException("Log rotated immediately")
@@ -4915,7 +4945,7 @@ class TestSuite(abc.ABC):
         filename = "MAVProxy-downloaded-log.BIN"
         mavproxy = self.start_mavproxy()
         self.mavproxy_load_module(mavproxy, 'log')
-        self.set_parameter('SIM_SPEEDUP', 1)
+        self.context_set_speedup(1)
         mavproxy.send("log list\n")
         mavproxy.expect(r"\bLog (\d+) .* lastLog \1 ")
         mavproxy.send("set shownoise 0\n")
@@ -4977,7 +5007,7 @@ class TestSuite(abc.ABC):
         # now, or MAVProxy does not see it as the latest log:
         self.wait_gps_fix_type_gte(3)
 
-        self.set_parameter('SIM_SPEEDUP', 1)
+        self.context_set_speedup(1)
 
         endpoints = [('UDPClient', ':16001') ,
                      ('UDPServer', 'udpout:127.0.0.1:16002'),
@@ -5021,7 +5051,7 @@ class TestSuite(abc.ABC):
             })
         self.reboot_sitl()
 
-        self.set_parameter('SIM_SPEEDUP', 1)
+        self.context_set_speedup(1)
 
         endpoints = [('UDPMulticast', 'mcast:16005') ,
                      ('UDPBroadcast', ':16006')]
@@ -5058,7 +5088,7 @@ class TestSuite(abc.ABC):
             })
         self.reboot_sitl()
 
-        self.set_parameter('SIM_SPEEDUP', 1)
+        self.context_set_speedup(1)
 
         filename = "MAVProxy-downloaded-can-log.BIN"
         # port 15550 is in SITL_Periph_State.h as SERIAL4 udpclient:127.0.0.1:15550
@@ -5876,7 +5906,7 @@ class TestSuite(abc.ABC):
                     if i in map_copy:
                         chan16[i-1] = map_copy[i]
 
-            except Queue.Empty:
+            except queue.Empty:
                 pass
 
             buf = struct.pack('<HHHHHHHHHHHHHHHH', *chan16)
@@ -6117,10 +6147,10 @@ class TestSuite(abc.ABC):
     def wait_armed(self, timeout=20):
         tstart = self.get_sim_time()
         while self.get_sim_time_cached() - tstart < timeout:
-            self.wait_heartbeat(drain_mav=False)
             if self.mav.motors_armed():
                 self.progress("Motors ARMED")
                 return
+            self.wait_heartbeat(drain_mav=False)
         raise AutoTestTimeoutException("Did not become armed")
 
     def disarm_vehicle(self, timeout=60, force=False):
@@ -6793,6 +6823,8 @@ class TestSuite(abc.ABC):
     def context_pop(self, process_interaction_allowed=True, hooks_already_removed=False):
         """Set parameters to origin values in reverse order."""
         dead = self.contexts.pop()
+        if dead.original_speedup is not None:
+            self.speedup = dead.original_speedup
         # remove hooks first; these hooks can raise exceptions which
         # we really don't want...
         if not hooks_already_removed:
@@ -7280,10 +7312,9 @@ class TestSuite(abc.ABC):
 
     def change_mode(self, mode, timeout=60):
         '''change vehicle flightmode'''
-        self.wait_heartbeat()
         self.progress("Changing mode to %s" % mode)
-        self.send_cmd_do_set_mode(mode)
         tstart = self.get_sim_time()
+        self.send_cmd_do_set_mode(mode)
         while not self.mode_is(mode):
             custom_num = self.mav.messages['HEARTBEAT'].custom_mode
             self.progress("mav.flightmode=%s Want=%s custom=%u" % (
@@ -7738,17 +7769,6 @@ class TestSuite(abc.ABC):
             validator=lambda value2, target2: validator(value2, target2),
             timeout=timeout,
             **kwargs
-        )
-
-    def watch_altitude_maintained(self, altitude_min, altitude_max, minimum_duration=5, relative=True, altitude_source=None):
-        """Watch altitude is maintained or not between altitude_min and altitude_max during minimum_duration"""
-        return self.wait_altitude(
-            altitude_min=altitude_min,
-            altitude_max=altitude_max,
-            relative=relative,
-            minimum_duration=minimum_duration,
-            timeout=minimum_duration + 1,
-            altitude_source=altitude_source,
         )
 
     def wait_climbrate(self, speed_min, speed_max, timeout=30, **kwargs):
@@ -9420,8 +9440,6 @@ Also, ignores heartbeats not from our target system'''
 
         start_time = time.time()
 
-        orig_speedup = None
-
         hooks_removed = False
 
         ex = None
@@ -9435,8 +9453,7 @@ Also, ignores heartbeats not from our target system'''
             self.drain_all_pexpects()
             if test.speedup is not None:
                 self.progress("Overriding speedup to %u" % test.speedup)
-                orig_speedup = self.get_parameter("SIM_SPEEDUP")
-                self.set_parameter("SIM_SPEEDUP", test.speedup)
+                self.context_set_speedup(test.speedup)
 
             test_function(**test_kwargs)
         except Exception as e:  # noqa: BLE001
@@ -9450,9 +9467,6 @@ Also, ignores heartbeats not from our target system'''
             hooks_removed = True
         self.test_timings[desc] = time.time() - start_time
         reset_needed = self.contexts[-1].sitl_commandline_customised
-
-        if orig_speedup is not None:
-            self.set_parameter("SIM_SPEEDUP", orig_speedup)
 
         passed = True
         if ex is not None:
@@ -11074,87 +11088,113 @@ Also, ignores heartbeats not from our target system'''
         if herrors > header_errors:
             raise NotAchievedException("Error parsing log file %s, %d header errors" % (logname, herrors))
 
+    def assert_current_log_filesizes(self, sizes):
+        file_list = self.download_full_log_list(LOG_ENTRY_sanity_check=False)
+        self.progress(f"List: {file_list}")
+        for file_id, minmax in sizes.items():
+            (minsize, maxsize) = minmax
+            if file_id not in file_list:
+                raise NotAchievedException(f"{file_id} not in downloaded log info")
+            m = file_list[file_id]
+            if m.size < minsize:
+                raise NotAchievedException(f"{file_id} too small; got={m.size} want>{minsize}")
+            if m.size > maxsize:
+                raise NotAchievedException(f"{file_id} too large; got={m.size} want<{maxsize}")
+
     def DataFlashErase(self):
         """Test that erasing the dataflash chip and creating a new log is error free"""
-        mavproxy = self.start_mavproxy()
-
-        ex = None
-        self.context_push()
-        try:
-            self.set_parameter("LOG_BACKEND_TYPE", 4)
-            self.reboot_sitl()
-            mavproxy.send("module load log\n")
-            mavproxy.send("log erase\n")
-            mavproxy.expect("Chip erase complete")
-            self.set_parameter("LOG_DISARMED", 1)
-            self.delay_sim_time(3, reason="LOG_DISARMED to take effect")
-            self.set_parameter("LOG_DISARMED", 0)
-            mavproxy.send("log download 1 logs/dataflash-log-erase.BIN\n")
-            mavproxy.expect("Finished downloading", timeout=120)
-            # read the downloaded log - it must parse without error
-            self.validate_log_file("logs/dataflash-log-erase.BIN")
-
-            self.start_subtest("Test file wrapping results in a valid file")
-            # roughly 4mb
-            self.set_parameter("LOG_FILE_DSRMROT", 1)
-            self.set_parameter("LOG_BITMASK", 131071)
-            self.wait_ready_to_arm()
-            if self.is_copter() or self.is_plane():
-                self.set_autodisarm_delay(0)
-            self.arm_vehicle()
-            self.delay_sim_time(30, reason="log data for wrap test")
-            self.disarm_vehicle()
-            # roughly 4mb
-            self.arm_vehicle()
-            self.delay_sim_time(30, reason="log data for wrap test")
-            self.disarm_vehicle()
-            # roughly 9mb, should wrap around
-            self.arm_vehicle()
-            self.delay_sim_time(50, reason="log data for wrap test")
-            self.disarm_vehicle()
-            # make sure we have finished logging
-            self.delay_sim_time(15, reason="logging to finish")
-            mavproxy.send("log list\n")
-            try:
-                mavproxy.expect("Log ([0-9]+)  numLogs ([0-9]+) lastLog ([0-9]+) size ([0-9]+)", timeout=120)
-            except pexpect.TIMEOUT as e:
-                if self.sitl_is_running():
-                    self.progress("SITL is running")
-                else:
-                    self.progress("SITL is NOT running")
-                raise NotAchievedException("Received %s" % str(e))
-            if int(mavproxy.match.group(2)) != 3:
-                raise NotAchievedException("Expected 3 logs got %s" % (mavproxy.match.group(2)))
-
-            mavproxy.send("log download 1 logs/dataflash-log-erase2.BIN\n")
-            mavproxy.expect("Finished downloading", timeout=120)
-            self.validate_log_file("logs/dataflash-log-erase2.BIN", 1)
-
-            mavproxy.send("log download latest logs/dataflash-log-erase3.BIN\n")
-            mavproxy.expect("Finished downloading", timeout=120)
-            self.validate_log_file("logs/dataflash-log-erase3.BIN", 1)
-
-            # clean up
-            mavproxy.send("log erase\n")
-            mavproxy.expect("Chip erase complete")
-
-            # clean up
-            mavproxy.send("log erase\n")
-            mavproxy.expect("Chip erase complete")
-
-        except Exception as e:  # noqa: BLE001
-            self.print_exception_caught(e)
-            ex = e
-
-        mavproxy.send("module unload log\n")
-
-        self.context_pop()
+        # we have to significantly reduce the data going into the
+        # blackbox chip - it is only 4MB in size and we persist
+        # logging for 15 seconds.  That means we can end up rotating
+        # the contents for size way too much.
+        self.set_parameters({
+            "LOG_DISARMED": 0,
+            "LOG_BACKEND_TYPE": 4,
+            "LOG_BITMASK": 14,
+            "SIM_SPEEDUP": 1,  # there's a wallclock-time thread involved!
+        })
         self.reboot_sitl()
 
-        self.stop_mavproxy(mavproxy)
+        mavproxy = self.start_mavproxy()
 
-        if ex is not None:
-            raise ex
+        mavproxy.send("module load log\n")
+        mavproxy.send("log erase\n")
+        mavproxy.expect("Chip erase complete")
+
+        self.set_autodisarm_delay(0)
+
+        self.progress("Creating a very short log")
+        self.wait_ready_to_arm()
+        self.set_parameter("DISARM_DELAY", 1)
+        self.arm_vehicle()
+        self.wait_disarmed()
+        self.delay_sim_time(15, reason="Allow log persistence to finish")
+        mavproxy.send("log download 1 logs/dataflash-log-erase.BIN\n")
+        mavproxy.expect("Finished downloading", timeout=120)
+        # read the downloaded log - it must parse without error
+        self.validate_log_file("logs/dataflash-log-erase.BIN")
+        self.assert_log_dsf_no_drops("logs/dataflash-log-erase.BIN")
+        self.assert_current_log_filesizes({
+            1: (1000*1024, 1100*1024),
+        })
+
+        self.start_subtest("Test rotation results in a valid file")
+        self.set_parameter("LOG_FILE_DSRMROT", 1)
+
+        self.progress("Appending to create larger log")
+        self.arm_vehicle()
+        self.wait_disarmed()
+        self.delay_sim_time(15, reason="Allow log persistence to finish")
+        self.assert_current_log_filesizes({
+            1: (1980*1024, 2020*1024),
+        })
+        self.progress("Creating a second log")
+        self.arm_vehicle()
+        self.wait_disarmed()
+        self.delay_sim_time(15, reason="Allow log persistence to finish")
+        self.assert_current_log_filesizes({
+            1: (1980*1024, 2020*1024),
+            2: (1000*1024, 1100*1024),
+        })
+
+        self.progress("Creating a very large log which wipes the other ones out")
+        self.context_collect('STATUSTEXT')
+        self.set_parameter("LOG_BITMASK", 131071)
+        self.set_parameter("DISARM_DELAY", 0)  # disabled
+        self.arm_vehicle()
+        self.wait_statustext('Chip full, logging stopped', check_context=True, timeout=60)
+        self.disarm_vehicle()
+
+        # make sure we have finished logging
+        self.delay_sim_time(15, reason="logging to finish")
+
+        self.assert_current_log_filesizes({
+            1: (3809996, 4109996),
+        })
+
+        mavproxy.send("log list\n")
+        try:
+            mavproxy.expect("Log ([0-9]+)  numLogs ([0-9]+) lastLog ([0-9]+) size ([0-9]+)", timeout=120)
+        except pexpect.TIMEOUT as e:
+            if self.sitl_is_running():
+                self.progress("SITL is running")
+            else:
+                self.progress("SITL is NOT running")
+            raise NotAchievedException("Received %s" % str(e))
+        if int(mavproxy.match.group(2)) != 1:
+            raise NotAchievedException("Expected 1 log got %s" % (mavproxy.match.group(2)))
+
+        mavproxy.send("log download 1 logs/dataflash-log-erase2.BIN\n")
+        mavproxy.expect("Finished downloading", timeout=120)
+        self.validate_log_file("logs/dataflash-log-erase2.BIN", header_errors=1)
+
+        # clean up
+        mavproxy.send("log erase\n")
+        mavproxy.expect("Chip erase complete")
+
+        # clean up
+        mavproxy.send("log erase\n")
+        mavproxy.expect("Chip erase complete")
 
     def ArmFeatures(self):
         '''Arm features'''
@@ -11674,14 +11714,14 @@ Also, ignores heartbeats not from our target system'''
 
             self.progress("try at the main loop rate")
             # have to reset the speedup as MAVProxy can't keep up otherwise
-            old_speedup = self.get_parameter("SIM_SPEEDUP")
-            self.set_parameter("SIM_SPEEDUP", 1.0)
+            self.context_push()
+            self.context_set_speedup(1.0)
             # ArduPilot currently limits message rate to 80% of main loop rate:
             want_rate = self.get_parameter("SCHED_LOOP_RATE") * 0.8
             self.set_message_rate_hz(mavutil.mavlink.MAVLINK_MSG_ID_CAMERA_FEEDBACK,
                                      want_rate)
             rate = round(self.measure_message_rate("CAMERA_FEEDBACK", 20))
-            self.set_parameter("SIM_SPEEDUP", old_speedup)
+            self.context_pop()
             self.progress("Want=%f got=%f" % (want_rate, rate))
             if abs(rate - want_rate) > 2:
                 raise NotAchievedException("Did not get expected rate")
@@ -12905,6 +12945,19 @@ switch value'''
     def dfreader_for_path(self, path):
         return DFReader.DFReader_binary(path,
                                         zero_time_base=True)
+
+    def assert_log_dsf_no_drops(self, path):
+        """Assert that DSF.Dp (write-buffer drop count) is zero in the given log file"""
+        dfreader = self.dfreader_for_path(path)
+        dropped = 0
+        while True:
+            m = dfreader.recv_match(type='DSF')
+            if m is None:
+                break
+            dropped = m.Dp
+        self.progress("DSF dropcount in %s: %d" % (path, dropped))
+        if dropped != 0:
+            raise NotAchievedException("Expected zero dropped log messages in %s, got %d" % (path, dropped))
 
     def dfreader_for_current_onboard_log(self):
         return self.dfreader_for_path(self.current_onboard_log_filepath())
@@ -15270,6 +15323,93 @@ switch value'''
         self.ftp_recv(timeout=5)
 
         return data, eof_nack
+
+    def ftp_write_file(self, path, data):
+        '''write bytes to a remote path via MAVLink FTP (CreateFile + WriteFile)'''
+        data = bytearray(data)
+
+        # ResetSessions
+        op = FTP_OP(
+            seq=0, session=0, opcode=mavftp_op.OP_ResetSessions,
+            size=0, req_opcode=0, burst_complete=0, offset=0, payload=None,
+        )
+        self.ftp_send(op)
+        reply = self.ftp_recv(timeout=5)
+        if reply is None:
+            raise NotAchievedException("No reply to ResetSessions")
+        seq = reply.seq
+
+        # CreateFile (open write-truncate)
+        path_bytes = bytearray(path.encode('utf-8')) + bytearray([0])
+        op = FTP_OP(
+            seq=seq, session=0, opcode=mavftp_op.OP_CreateFile,
+            size=len(path_bytes), req_opcode=0, burst_complete=0,
+            offset=0, payload=path_bytes,
+        )
+        self.ftp_send(op)
+        reply = self.ftp_recv(timeout=5)
+        if reply is None:
+            raise NotAchievedException("No reply to CreateFile")
+        if reply.opcode != mavftp_op.OP_Ack:
+            raise NotAchievedException(f"CreateFile failed: opcode={reply.opcode}")
+        seq = reply.seq
+
+        # WriteFile in FTP_MAX_PAYLOAD-byte chunks
+        offset = 0
+        while offset < len(data):
+            chunk = data[offset:offset + FTP_MAX_PAYLOAD]
+            op = FTP_OP(
+                seq=seq, session=0, opcode=mavftp_op.OP_WriteFile,
+                size=len(chunk), req_opcode=0, burst_complete=0,
+                offset=offset, payload=chunk,
+            )
+            self.ftp_send(op)
+            reply = self.ftp_recv(timeout=5)
+            if reply is None:
+                raise NotAchievedException(f"No reply to WriteFile at offset {offset}")
+            if reply.opcode != mavftp_op.OP_Ack:
+                raise NotAchievedException(f"WriteFile failed at offset {offset}: opcode={reply.opcode}")
+            seq = reply.seq
+            offset += len(chunk)
+
+        # TerminateSession
+        op = FTP_OP(
+            seq=seq, session=0, opcode=mavftp_op.OP_TerminateSession,
+            size=0, req_opcode=0, burst_complete=0, offset=0, payload=None,
+        )
+        self.ftp_send(op)
+        self.ftp_recv(timeout=5)
+
+    def ftp_create_directory(self, path):
+        '''create a remote directory via MAVLink FTP; ignores error if it already exists'''
+        path_bytes = bytearray(path.encode('utf-8')) + bytearray([0])
+        op = FTP_OP(
+            seq=0, session=0, opcode=mavftp_op.OP_CreateDirectory,
+            size=len(path_bytes), req_opcode=0, burst_complete=0,
+            offset=0, payload=path_bytes,
+        )
+        self.ftp_send(op)
+        reply = self.ftp_recv(timeout=5)
+        if reply is None:
+            raise NotAchievedException("No reply to CreateDirectory")
+        # Nack is acceptable if directory already exists
+        if reply.opcode not in (mavftp_op.OP_Ack, mavftp_op.OP_Nack):
+            raise NotAchievedException(f"CreateDirectory unexpected opcode={reply.opcode}")
+
+    def ftp_remove_file(self, path):
+        '''remove a remote file via MAVLink FTP (RemoveFile)'''
+        path_bytes = bytearray(path.encode('utf-8')) + bytearray([0])
+        op = FTP_OP(
+            seq=0, session=0, opcode=mavftp_op.OP_RemoveFile,
+            size=len(path_bytes), req_opcode=0, burst_complete=0,
+            offset=0, payload=path_bytes,
+        )
+        self.ftp_send(op)
+        reply = self.ftp_recv(timeout=5)
+        if reply is None:
+            raise NotAchievedException("No reply to RemoveFile")
+        if reply.opcode != mavftp_op.OP_Ack:
+            raise NotAchievedException(f"RemoveFile failed for {path}: opcode={reply.opcode}")
 
     def verify_ftp_burst_eof(self, data, eof_nack, expected_size, label):
         '''verify burst read EOF NAK is correct'''

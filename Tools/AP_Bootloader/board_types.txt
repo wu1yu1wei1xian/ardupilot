@@ -334,6 +334,8 @@ AP_HW_CSKY_PMU                       1212
 AP_HW_PilotGaeaSH7V1                 1213
 AP_HW_JPilot-C                       1214
 AP_HW_SIYI-UniFC-6-PICO              1215
+AP_HW_CSKY_AVEGA6X                   1216
+AP_HW_CSKY_AVEGALITER03              1217
 
 AP_HW_MUPilot                        1222
 AP_HW_HWH7                           1223
@@ -540,6 +542,7 @@ AP_HW_IOMCU_F103                     5711
 AP_HW_IOMCU_F103_8MHZ                5712  # some boards are clocked differently
 AP_HW_IOMCU_F100                     5713
 
+# IDs 5730-5739 reserved for NWBlue
 
 #IDs 5800-5809 reserved for Droneer
 AP_HW_DroneerF405                    5800
@@ -600,6 +603,8 @@ AP_HW_CUAV-V6X-V2_ODID              17001
 AP_HW_CUAV-X25-EVO_ODID             17002
 AP_HW_SKYDROID-S3_ODID              11300
 AP_HW_CUBEORANGEPLUS_ODID           11063
+AP_HW_SIYI_N7_ODID                  11123
+AP_HW_SIYI-UniFC-6-PICO_ODID        11215
 
 # do not allocate board IDs above 10,000 for non-ODID boards.
 # do not allocate board IDs above 19,999 in this file.

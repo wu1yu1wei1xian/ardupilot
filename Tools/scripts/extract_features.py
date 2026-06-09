@@ -56,6 +56,7 @@ class ExtractFeatures(BuildScriptBase):
             ('HAL_EFI_ENABLED', 'AP_EFI::AP_EFI',),
             ('AP_EFI_{type}_ENABLED', 'AP_EFI_(?P<type>.*)::update',),
 
+            ('HAL_WITH_ESC_TELEM', r'AP_ESC_Telem::AP_ESC_Telem\b',),
             ('AP_EXTENDED_ESC_TELEM_ENABLED', r'AP_DroneCAN::handle_esc_ext_status\b',),
 
             ('AP_TEMPERATURE_SENSOR_ENABLED', 'AP_TemperatureSensor::AP_TemperatureSensor',),
@@ -249,6 +250,7 @@ class ExtractFeatures(BuildScriptBase):
 
             ('AP_INERTIALSENSOR_KILL_IMU_ENABLED', r'AP_InertialSensor::kill_imu'),
             ('AP_CRASHDUMP_ENABLED', 'CrashCatcher_DumpMemory'),
+            ('AP_MAVLINK_FAILURE_CREATION_ENABLED', 'GCS_MAVLINK::deadlock_sem'),
             ('AP_CAN_SLCAN_ENABLED', 'SLCAN::CANIface::var_info'),
             ('AP_ADSB_AVOIDANCE_ENABLED', 'AP_Avoidance::init'),
 

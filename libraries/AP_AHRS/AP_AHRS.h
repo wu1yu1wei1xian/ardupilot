@@ -251,9 +251,13 @@ public:
     }
 
     // Retrieves the corrected NED delta velocity in use by the inertial navigation
-    void getCorrectedDeltaVelocityNED(Vector3f& ret, float& dt) const {
+    bool getCorrectedDeltaVelocityNED(Vector3f& ret, float& dt) const {
+        if (!state.corrected_dv_valid) {
+            return false;
+        }
         ret = state.corrected_dv;
         dt = state.corrected_dv_dt;
+        return true;
     }
 
     // set the EKF's origin location in 10e7 degrees.  This should only
@@ -953,7 +957,7 @@ private:
     bool _get_secondary_position(Location &loc) const;
 
     // Retrieves the corrected NED delta velocity in use by the inertial navigation
-    void _getCorrectedDeltaVelocityNED(Vector3f& ret, float& dt) const;
+    bool _getCorrectedDeltaVelocityNED(Vector3f& ret, float& dt) const WARN_IF_UNUSED;
 
     // returns the inertial navigation origin in lat/lon/alt
     bool _get_origin(Location &ret) const WARN_IF_UNUSED;
@@ -1025,6 +1029,7 @@ private:
         bool secondary_pos_ok;
         Vector2f ground_speed_vec;
         float ground_speed;
+        bool corrected_dv_valid;
         Vector3f corrected_dv;
         float corrected_dv_dt;
         Location origin;
@@ -1059,6 +1064,36 @@ private:
     AP_AHRS_External external;
     struct AP_AHRS_Backend::Estimates external_estimates;
 #endif
+
+// FIXME: C++-17 will let us do away with this construct:
+#define AP_AHRS_BACKEND_COUNT                   \
+    (!!(AP_AHRS_DCM_ENABLED) +                  \
+     !!(AP_AHRS_NAVEKF2_ENABLED) +              \
+     !!(AP_AHRS_NAVEKF3_ENABLED) +              \
+     !!(AP_AHRS_SIM_ENABLED) +                  \
+     !!(AP_AHRS_EXTERNAL_ENABLED))
+
+    struct {
+        AP_AHRS_Backend &backend;
+        AP_AHRS_Backend::Estimates &estimates;
+    } backends_and_estimates[AP_AHRS_BACKEND_COUNT] {
+#if AP_AHRS_DCM_ENABLED
+        { dcm, dcm_estimates },
+#endif  // AP_AHRS_DCM_ENABLED
+#if AP_AHRS_NAVEKF2_ENABLED
+        { ekf2, ekf2_estimates },
+#endif  // AP_AHRS_NAVEKF2_ENABLED
+#if AP_AHRS_NAVEKF3_ENABLED
+        { ekf3, ekf3_estimates },
+#endif  // AP_AHRS_NAVEKF3_ENABLED
+#if AP_AHRS_SIM_ENABLED
+        { sim, sim_estimates },
+#endif  // AP_AHRS_SIM_ENABLED
+#if AP_AHRS_EXTERNAL_ENABLED
+        { external, external_estimates },
+#endif  // AP_AHRS_EXTERNAL_ENABLED
+    };
+
 
     enum class Options : uint16_t {
         DISABLE_DCM_FALLBACK_FW=(1U<<0),

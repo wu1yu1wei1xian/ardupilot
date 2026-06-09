@@ -665,7 +665,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
 
             self.start_subtest("test MAV_CMD_DO_REPEAT_RELAY")
             self.context_push()
-            self.set_parameter("SIM_SPEEDUP", 1)
+            self.context_set_speedup(1)
             method(
                 mavutil.mavlink.MAV_CMD_DO_REPEAT_RELAY,
                 p1=0,  # servo 1
@@ -691,7 +691,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
             self.start_subtest("test MAV_CMD_DO_REPEAT_SERVO")
 
             self.context_push()
-            self.set_parameter("SIM_SPEEDUP", 1)
+            self.context_set_speedup(1)
             trim = self.get_parameter("SERVO13_TRIM")
             value = 2000
             method(
@@ -4348,8 +4348,8 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         # Since ArduPilot has a 1s timeout on re-requesting, This only
         # requires a round-trip delay of 1/speedup seconds to trigger
         # - and that has been seen in practise on Travis
-        old_speedup = self.get_parameter("SIM_SPEEDUP")
-        self.set_parameter("SIM_SPEEDUP", 1)
+        self.context_push()
+        self.context_set_speedup(1)
         self.mav.mav.mission_count_send(target_system,
                                         target_component,
                                         2,
@@ -4395,7 +4395,7 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
 
         self.expect_request_for_item(item)
 
-        self.set_parameter("SIM_SPEEDUP", old_speedup)
+        self.context_pop()
 
         self.progress("Now waiting for a timeout")
         tstart = self.get_sim_time()
@@ -7151,6 +7151,31 @@ Brakes have negligible effect (with=%0.2fm without=%0.2fm delta=%0.2fm)
         self.set_rc(3, 1500)
         self.disarm_vehicle()
 
+    def EnterModeOnSafetySwitch(self):
+        '''test mode enter behaviour when there's a safety switch involved'''
+        self.set_parameters({
+            "SIM_GPS1_ENABLE": 0,
+        })
+        self.reboot_sitl()
+        self.wait_mode('MANUAL')
+        self.wait_prearm_sys_status_healthy()
+        self.arm_vehicle()
+        self.run_cmd(
+            mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+            p1=mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+            p2=self.get_mode_from_mode_mapping('GUIDED'),
+            want_result=mavutil.mavlink.MAV_RESULT_FAILED,
+        )
+        self.set_safetyswitch_on()
+        self.run_cmd(
+            mavutil.mavlink.MAV_CMD_DO_SET_MODE,
+            p1=mavutil.mavlink.MAV_MODE_FLAG_CUSTOM_MODE_ENABLED,
+            p2=self.get_mode_from_mode_mapping('GUIDED'),
+            want_result=mavutil.mavlink.MAV_RESULT_FAILED,
+        )
+        self.set_safetyswitch_off()
+        self.disarm_vehicle()
+
     def GetMessageInterval(self):
         '''check that the two methods for requesting a MESSAGE_INTERVAL message are equivalent'''
         target_msg = mavutil.mavlink.MAVLINK_MSG_ID_HOME_POSITION
@@ -7489,6 +7514,7 @@ return update()
             self.REQUIRE_LOCATION_FOR_ARMING,
             self.GetMessageInterval,
             self.SafetySwitch,
+            self.EnterModeOnSafetySwitch,
             self.ThrottleFailsafe,
             self.DriveEachFrame,
             self.AP_ROVER_AUTO_ARM_ONCE_ENABLED,
