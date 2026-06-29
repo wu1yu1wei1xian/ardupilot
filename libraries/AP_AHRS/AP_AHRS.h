@@ -37,9 +37,6 @@
 // forward declare view class
 class AP_AHRS_View;
 
-#define AP_AHRS_NAVEKF_SETTLE_TIME_MS 20000     // time in milliseconds the ekf needs to settle after being started
-
-
 // fwd declare GSF estimator
 class EKFGSF_yaw;
 
@@ -126,7 +123,7 @@ public:
     bool get_wind_estimation_enabled() const { return wind_estimation_enabled; }
 
     // return a wind estimation vector, in m/s; returns 0,0,0 on failure
-    const Vector3f &wind_estimate() const { return state.wind_estimate; }
+    const Vector3f &wind_estimate() const { return active_estimates->wind; }
 
     // return a wind estimation vector, in m/s; returns 0,0,0 on failure
     bool wind_estimate(Vector3f &wind) const;
@@ -139,13 +136,6 @@ public:
 
     // returns forward head-wind component in m/s. Negative means tail-wind
     float head_wind(void) const;
-
-    // instruct DCM to update its wind estimate:
-    void estimate_wind() {
-#if AP_AHRS_DCM_ENABLED
-        dcm.estimate_wind();
-#endif
-    }
 
 #if AP_AHRS_EXTERNAL_WIND_ESTIMATE_ENABLED
     void set_external_wind_estimate(float speed, float direction) {
@@ -356,7 +346,9 @@ public:
     bool pre_arm_check(bool requires_position, char *failure_msg, uint8_t failure_msg_len) const;
 
     // true if the AHRS has completed initialisation
-    bool initialised() const;
+    bool initialised() const {
+        return configured_estimates->initialised;
+    }
 
 #if AP_AHRS_DCM_ENABLED
     // return true if *DCM* yaw has been initialised
@@ -366,7 +358,10 @@ public:
 #endif
 
     // get_filter_status - returns filter status as a series of flags
-    bool get_filter_status(nav_filter_status &status) const;
+    bool get_filter_status(nav_filter_status &status) const {
+        status = configured_estimates->filter_status;
+        return configured_estimates->filter_status_valid;
+    }
 
     // get compass offset estimates
     // true if offsets are valid
@@ -415,7 +410,9 @@ public:
 
     // return the innovations for the specified instance
     // An out of range instance (eg -1) returns data for the primary instance
-    bool get_innovations(Vector3f &velInnov, Vector3f &posInnov, Vector3f &magInnov, float &tasInnov, float &yawInnov) const;
+    bool get_innovations(Vector3f &velInnov, Vector3f &posInnov, Vector3f &magInnov, float &tasInnov, float &yawInnov) const {
+        return configured_backend->get_innovations(velInnov, posInnov, magInnov, tasInnov, yawInnov);
+    }
 
     // returns true when the state estimates are significantly degraded by vibration
     bool is_vibration_affected() const;
@@ -424,7 +421,14 @@ public:
     // indicates perfect consistency between the measurement and the EKF solution and a value of 1 is the maximum
     // inconsistency that will be accepted by the filter
     // boolean false is returned if variances are not available
-    bool get_variances(float &velVar, float &posVar, float &hgtVar, Vector3f &magVar, float &tasVar) const;
+    bool get_variances(float &velVar, float &posVar, float &hgtVar, Vector3f &magVar, float &tasVar) const {
+        velVar = configured_estimates->velVar;
+        posVar = configured_estimates->posVar;
+        hgtVar = configured_estimates->hgtVar;
+        magVar = configured_estimates->magVar;
+        tasVar = configured_estimates->tasVar;
+        return configured_estimates->variances_valid;
+    }
 
     // get 1-sigma position and velocity uncertainty derived from the EKF state error covariance matrix P
     // pos_horiz_m: 2D RMS horizontal position uncertainty (m)
@@ -437,11 +441,19 @@ public:
     // returns true on success and results are placed in innovations and variances arguments
     bool get_vel_innovations_and_variances_for_source(uint8_t source, Vector3f &innovations, Vector3f &variances) const WARN_IF_UNUSED;
 
+#if AP_AHRS_GET_MAG_DATA_ENABLED
     // returns the expected NED magnetic field
-    bool get_mag_field_NED(Vector3f& ret) const;
+    bool get_mag_field_NED(Vector3f& ret) const {
+        ret = active_estimates->mag_field_NED;
+        return active_estimates->mag_field_NED_valid;
+    }
 
     // returns the estimated magnetic field offsets in body frame
-    bool get_mag_field_correction(Vector3f &ret) const;
+    bool get_mag_field_correction(Vector3f &ret) const {
+        ret = active_estimates->mag_field_corrections;
+        return active_estimates->mag_field_corrections_valid;
+    }
+#endif  // AP_AHRS_GET_MAG_DATA_ENABLED
 
     // return the index of the airspeed we should use for airspeed measurements
     // with multiple airspeed sensors and airspeed affinity in EKF3, it is possible to have switched
@@ -460,10 +472,14 @@ public:
     uint8_t get_primary_gyro_index(void) const { return state.primary_gyro; }
 
     // see if EKF lane switching is possible to avoid EKF failsafe
-    void check_lane_switch(void);
+    void check_lane_switch(void) {
+        active_backend->check_lane_switch();
+    }
 
     // request EKF yaw reset to try and avoid the need for an EKF lane switch or failsafe
-    void request_yaw_reset(void);
+    void request_yaw_reset(void) {
+        active_backend->request_yaw_reset();
+    }
 
 #if AP_AHRS_EKF_RESET_ENABLED
     // request full backend reset, currently only implemented for EKF3
@@ -513,7 +529,9 @@ public:
 
     // returns a canonicalised and valid EKFType, as opposed to the raw
     // parameter value which may be any value the user has set
-    EKFType configured_ekf_type(void) const;
+    EKFType configured_ekf_type(void) const {
+        return state.configured_ekf_type;
+    }
 
     // set the selected ekf type, for RC aux control
     void set_ekf_type(EKFType ahrs_type) {
@@ -829,18 +847,7 @@ private:
     float _sin_pitch;
     float _sin_yaw;
 
-#if HAL_NAVEKF2_AVAILABLE
-    void update_EKF2(void);
-#endif
-#if HAL_NAVEKF3_AVAILABLE
-    void update_EKF3(void);
-#endif
-
-    static constexpr uint16_t startup_delay_ms = 1000;
-    uint32_t start_time_ms;
     uint8_t _ekf_flags; // bitmask from Flags enumeration
-
-    void update_DCM();
 
     /*
      * home-related state
@@ -868,14 +875,6 @@ private:
     void update_AOA_SSA(void);
 
     EKFType last_active_ekf_type;
-
-#if AP_AHRS_SIM_ENABLED
-    void update_SITL(void);
-#endif
-
-#if AP_AHRS_EXTERNAL_ENABLED
-    void update_external(void);
-#endif    
 
     /*
      * trim-related state and private methods:
@@ -939,11 +938,17 @@ private:
     // return secondary attitude solution if available, as quaternion
     bool _get_secondary_quaternion(Quaternion &quat) const;
 
+    // set state.configured_ekf_type and the pointer to the configured backend
+    void update_configured_ekf_type();
+
     // set state.active_EKF_type and the pointer to the active backend
     void update_active_EKF_type();
 
     // get active EKF type
     EKFType _active_EKF_type(void) const;
+
+    // get configured EKF type:
+    EKFType _configured_ekf_type(void) const;
 
     // return a true airspeed estimate (navigation airspeed) if
     // available. return true if we have an estimate
@@ -998,7 +1003,8 @@ private:
       state updated at the end of each update() call
      */
     struct {
-        EKFType active_EKF_type;
+        EKFType active_EKF_type;  // EKFType of backend these results are for
+        EKFType configured_ekf_type;  // vetted parameter-configured EKFType
         uint8_t primary_gyro;
         uint8_t primary_accel;
         uint8_t primary_core;
@@ -1007,8 +1013,6 @@ private:
         Vector3f gyro_drift;
         Vector3f accel_ef;
         Vector3f accel_bias;
-        Vector3f wind_estimate;
-        bool wind_estimate_ok;
         float EAS2TAS;
         bool airspeed_EAS_ok;
         float airspeed_EAS;
@@ -1110,6 +1114,7 @@ private:
 
     // true when we have completed the common origin setup
     bool done_common_origin;
+    void try_set_common_origin(const AP_AHRS_Backend &source_backend, const AP_AHRS_Backend::Estimates &source_estimates);
 
     // return a pointer to the backend for supplied type
     AP_AHRS_Backend *backend_for_type(EKFType type);
@@ -1121,6 +1126,14 @@ private:
         return const_cast<AP_AHRS*>(this)->estimates_for_type(type);
     }
 
+    // configured_backend is the backend the user wants to use as
+    // indicated by parameter values
+    AP_AHRS_Backend *configured_backend;
+    AP_AHRS_Backend::Estimates *configured_estimates;
+
+    // active_backend is the backend which is currently providing
+    // results (e.g. this may be a fallback estimator if the
+    // configured_backend is unhealthy)
     AP_AHRS_Backend *active_backend;
     AP_AHRS_Backend::Estimates *active_estimates;
 
